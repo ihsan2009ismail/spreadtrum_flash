@@ -90,6 +90,7 @@ typedef struct {
 	libusb_device_handle *dev_handle;
 	int endp_in, endp_out;
 	int endp_in_blk, endp_out_blk;
+	int interface_num;
 #else
 	int serial;
 #endif
@@ -101,8 +102,9 @@ typedef struct {
 #define FLAGS_TRANSCODE 2
 
 #if USE_LIBUSB
-static void find_endpoints(libusb_device_handle *dev_handle, int result[4]) {
+static void find_endpoints(libusb_device_handle *dev_handle, int result[5]) {
 	int endp_in = -1, endp_out = -1, endp_in_blk = 0, endp_out_blk = 0;
+	int claimed_interface = -1;
 	int i, k, err;
 	//struct libusb_device_descriptor desc;
 	struct libusb_config_descriptor *config;
@@ -125,9 +127,16 @@ static void find_endpoints(libusb_device_handle *dev_handle, int result[4]) {
 		for (i = 0; i < interface_desc->bNumEndpoints; i++) {
 			const struct libusb_endpoint_descriptor *endpoint;
 			endpoint = interface_desc->endpoint + i;
-			if (endpoint->bmAttributes == 2) {
-				int addr = endpoint->bEndpointAddress;
-				err = 0;
+							if (endpoint->bmAttributes == 2) {
+					int addr = endpoint->bEndpointAddress;
+					err = 0;
+					DBG_LOG("USB candidate: iface=%d alt=%d ep=0x%02x dir=%s attr=0x%02x max_packet=%u\n",
+						interface_desc->bInterfaceNumber,
+						interface_desc->bAlternateSetting,
+						addr, addr & 0x80 ? "IN" : "OUT",
+						endpoint->bmAttributes,
+						(unsigned)endpoint->wMaxPacketSize);
+
 				if (addr & 0x80) {
 					if (endp_in >= 0) ERR_EXIT("more than one endp_in\n");
 					endp_in = addr;
@@ -142,17 +151,17 @@ static void find_endpoints(libusb_device_handle *dev_handle, int result[4]) {
 			}
 		}
 		if (claim) {
-			i = interface_desc->bInterfaceNumber;
+			claimed_interface = interface_desc->bInterfaceNumber;
 #if LIBUSB_DETACH
-			err = libusb_kernel_driver_active(dev_handle, i);
+			err = libusb_kernel_driver_active(dev_handle, claimed_interface);
 			if (err > 0) {
 				DBG_LOG("kernel driver is active, trying to detach\n");
-				err = libusb_detach_kernel_driver(dev_handle, i);
+				err = libusb_detach_kernel_driver(dev_handle, claimed_interface);
 				if (err < 0)
 					ERR_EXIT("libusb_detach_kernel_driver failed : %s\n", libusb_error_name(err));
 			}
 #endif
-			err = libusb_claim_interface(dev_handle, i);
+			err = libusb_claim_interface(dev_handle, claimed_interface);
 			if (err < 0)
 				ERR_EXIT("libusb_claim_interface failed : %s\n", libusb_error_name(err));
 			break;
@@ -162,12 +171,16 @@ static void find_endpoints(libusb_device_handle *dev_handle, int result[4]) {
 	if (endp_out < 0) ERR_EXIT("endp_out not found\n");
 	libusb_free_config_descriptor(config);
 
-	//DBG_LOG("USB endp_in=%02x, endp_out=%02x\n", endp_in, endp_out);
+		DBG_LOG("USB selected: iface=%d IN=0x%02x OUT=0x%02x IN_MPS=%d OUT_MPS=%d\n",
+		claimed_interface, endp_in, endp_out,
+		endp_in_blk, endp_out_blk);
 
 	result[0] = endp_in;
 	result[1] = endp_out;
 	result[2] = endp_in_blk;
 	result[3] = endp_out_blk;
+	result[4] = claimed_interface;
+
 }
 #else
 static void init_serial(int serial) {
@@ -198,7 +211,7 @@ static spdio_t* spdio_init(int serial, int flags) {
 	uint8_t *p; spdio_t *io;
 
 #if USE_LIBUSB
-	int endpoints[4];
+	int endpoints[5];
 	find_endpoints(dev_handle, endpoints);
 #else
 	init_serial(serial);
@@ -216,6 +229,7 @@ static spdio_t* spdio_init(int serial, int flags) {
 	io->endp_out = endpoints[1];
 	io->endp_in_blk = endpoints[2];
 	io->endp_out_blk = endpoints[3];
+	io->interface_num = endpoints[4];
 #else
 	io->serial = serial;
 #endif
@@ -401,6 +415,9 @@ static int send_msg(spdio_t *io) {
 	{
 		int err = libusb_bulk_transfer(io->dev_handle,
 				io->endp_out, io->enc_buf, io->enc_len, &ret, io->timeout);
+		DBG_LOG("USB OUT ep=0x%02x requested=%d transferred=%d ret=%d (%s)\n",
+				io->endp_out, io->enc_len, ret, err,
+				err < 0 ? libusb_error_name(err) : "OK");
 		if (err < 0)
 			ERR_EXIT("usb_send failed : %s\n", libusb_error_name(err));
 	}
@@ -408,8 +425,11 @@ static int send_msg(spdio_t *io) {
 	if (io->endp_out_blk == 512 && !((unsigned)io->enc_len % 512)) {
 		int dummy;
 		// signal end of transfer
-		libusb_bulk_transfer(io->dev_handle,
+		int err = libusb_bulk_transfer(io->dev_handle,
 				io->endp_out, NULL, 0, &dummy, io->timeout);
+		DBG_LOG("USB OUT ZLP ep=0x%02x requested=0 transferred=%d ret=%d (%s)\n",
+				io->endp_out, dummy, err,
+				err < 0 ? libusb_error_name(err) : "OK");
 	}
 #else
 	ret = write(io->serial, io->enc_buf, io->enc_len);
@@ -427,18 +447,39 @@ static int send_msg(spdio_t *io) {
 static int recv_msg1(spdio_t *io) {
 	int a, pos, len, chk;
 	int esc = 0, nread = 0, head_found = 0, plen = 6;
+	int pipe_retried = 0;
 
 	len = io->recv_len;
 	pos = io->recv_pos;
 	for (;;) {
 		if (pos >= len) {
 #if USE_LIBUSB
-			int err = libusb_bulk_transfer(io->dev_handle, io->endp_in, io->recv_buf, RECV_BUF_LEN, &len, io->timeout);
-			if (err == LIBUSB_ERROR_NO_DEVICE)
-				ERR_EXIT("connection closed\n");
-			else if (err == LIBUSB_ERROR_TIMEOUT) break;
-			else if (err < 0)
-				ERR_EXIT("usb_recv failed : %s\n", libusb_error_name(err));
+							int err = libusb_bulk_transfer(io->dev_handle, io->endp_in, io->recv_buf, RECV_BUF_LEN, &len, io->timeout);
+				DBG_LOG("USB IN ep=0x%02x requested=%d transferred=%d ret=%d (%s)\n",
+						io->endp_in, RECV_BUF_LEN, len, err,
+						err < 0 ? libusb_error_name(err) : "OK");
+				if (err == LIBUSB_ERROR_PIPE && !pipe_retried) {
+					int clr = libusb_clear_halt(io->dev_handle, io->endp_in);
+					pipe_retried = 1;
+					DBG_LOG("USB clear_halt ep=0x%02x ret=%d (%s)\n",
+							io->endp_in, clr,
+							clr < 0 ? libusb_error_name(clr) : "OK");
+					if (clr == 0) {
+						len = 0;
+						err = libusb_bulk_transfer(io->dev_handle,
+								io->endp_in, io->recv_buf, RECV_BUF_LEN,
+								&len, io->timeout);
+						DBG_LOG("USB IN retry ep=0x%02x requested=%d transferred=%d ret=%d (%s)\n",
+								io->endp_in, RECV_BUF_LEN, len, err,
+								 err < 0 ? libusb_error_name(err) : "OK");
+					}
+				}
+				if (err == LIBUSB_ERROR_NO_DEVICE)
+					ERR_EXIT("connection closed\n");
+				else if (err == LIBUSB_ERROR_TIMEOUT) break;
+				else if (err < 0)
+					ERR_EXIT("usb_recv failed : %s\n", libusb_error_name(err));
+
 #else
 			if (io->timeout >= 0) {
 				struct pollfd fds = { 0 };
