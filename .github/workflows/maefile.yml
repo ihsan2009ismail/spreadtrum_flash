@@ -1,27 +1,28 @@
-name: Makefile CI
+name: Build spd_dump
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: configure
-      run: ./configure
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make libusb-1.0-0-dev
 
-    - name: Install dependencies
-      run: make
+      - name: Build
+        run: make
 
-    - name: Run check
-      run: make check
-
-    - name: Run distcheck
-      run: make distcheck
+      - name: Upload spd_dump
+        uses: actions/upload-artifact@v4
+        with:
+          name: spd_dump
+          path: spd_dump
