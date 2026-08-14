@@ -1,0 +1,76 @@
+name: Windows PE build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-pe-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cross-compiler and libusb build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mingw-w64 \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config
+
+      - name: Build libusb for Windows
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/libusb/libusb.git "$RUNNER_TEMP/libusb"
+          cd "$RUNNER_TEMP/libusb"
+          ./autogen.sh
+          ./configure \
+            --host=x86_64-w64-mingw32 \
+            --prefix="$RUNNER_TEMP/mingw-libusb" \
+            --disable-udev
+          make -j"$(nproc)"
+          make install
+
+      - name: Build spd_dump.exe
+        shell: bash
+        run: |
+          x86_64-w64-mingw32-gcc \
+            -DUSE_LIBUSB=1 \
+            -O2 -Wall -Wextra -std=c99 -pedantic \
+            -I"$RUNNER_TEMP/mingw-libusb/include" \
+            -o spd_dump.exe \
+            spd_dump.c \
+            -L"$RUNNER_TEMP/mingw-libusb/lib" \
+            -lusb-1.0 \
+            -lsetupapi \
+            -lws2_32 \
+            -luser32 \
+            -ladvapi32
+
+      - name: Verify PE format
+        shell: bash
+        run: |
+          file spd_dump.exe
+          x86_64-w64-mingw32-objdump -f spd_dump.exe
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: spd_dump-windows
+          path: spd_dump.exe
+          if-no-files-found: error
