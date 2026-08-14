@@ -2,8 +2,6 @@ name: Build spd_dump Windows
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["main"]
 
 jobs:
   build-windows:
@@ -12,14 +10,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW and libusb
+      - name: Install MinGW
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64
+          sudo apt-get install -y mingw-w64 autoconf automake libtool pkg-config
 
-      - name: Build Windows executable
+      - name: Build libusb for Windows
         run: |
-          x86_64-w64-mingw32-gcc -DUSE_LIBUSB=1 -O2 -o spd_dump.exe spd_dump.c -lusb-1.0
+          git clone --depth 1 https://github.com/libusb/libusb.git
+          cd libusb
+          ./autogen.sh
+          ./configure --host=x86_64-w64-mingw32 --prefix="$HOME/mingw-libusb"
+          make -j2
+          make install
+
+      - name: Build spd_dump
+        env:
+          C_INCLUDE_PATH: ${{ env.HOME }}/mingw-libusb/include
+          LIBRARY_PATH: ${{ env.HOME }}/mingw-libusb/lib
+        run: |
+          x86_64-w64-mingw32-gcc \
+            -DUSE_LIBUSB=1 \
+            -O2 \
+            -I"$HOME/mingw-libusb/include" \
+            -o spd_dump.exe \
+            spd_dump.c \
+            -L"$HOME/mingw-libusb/lib" \
+            -lusb-1.0 \
+            -lsetupapi \
+            -lws2_32 \
+            -luser32 \
+            -ladvapi32
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
