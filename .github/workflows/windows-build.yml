@@ -23,25 +23,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install cross-compiler and CMake
+      - name: Install cross-compiler and Autoconf dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 cmake ninja-build
+          sudo apt-get install -y mingw-w64 autoconf automake libtool pkg-config
 
       - name: Build libusb for Windows
         shell: bash
         run: |
           git clone --depth 1 https://github.com/libusb/libusb.git "$RUNNER_TEMP/libusb"
-          cmake -S "$RUNNER_TEMP/libusb" -B "$RUNNER_TEMP/libusb-build" -G Ninja \
-            -DCMAKE_SYSTEM_NAME=Windows \
-            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-            -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/mingw-libusb" \
-            -DLIBUSB_BUILD_SHARED_LIBS=OFF \
-            -DLIBUSB_BUILD_TESTING=OFF \
-            -DLIBUSB_BUILD_EXAMPLES=OFF
-          cmake --build "$RUNNER_TEMP/libusb-build" --parallel
-          cmake --install "$RUNNER_TEMP/libusb-build"
+          cd "$RUNNER_TEMP/libusb"
+          ./autogen.sh
+          command -v x86_64-w64-mingw32-gcc
+          x86_64-w64-mingw32-gcc --version
+          CC=x86_64-w64-mingw32-gcc \
+          CXX=x86_64-w64-mingw32-g++ \
+          AR=x86_64-w64-mingw32-ar \
+          RANLIB=x86_64-w64-mingw32-ranlib \
+          NM=x86_64-w64-mingw32-nm \
+          STRIP=x86_64-w64-mingw32-strip \
+          ./configure \
+            --build=x86_64-pc-linux-gnu \
+            --host=x86_64-w64-mingw32 \
+            --prefix="$RUNNER_TEMP/mingw-libusb" \
+            --disable-udev \
+            --disable-shared \
+            --enable-static
+          make -j"$(nproc)"
+          make install
 
       - name: Build spd_dump.exe
         shell: bash
