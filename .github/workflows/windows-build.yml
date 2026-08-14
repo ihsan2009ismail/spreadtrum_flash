@@ -23,34 +23,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install cross-compiler and libusb build dependencies
+      - name: Install cross-compiler and CMake
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            mingw-w64 \
-            autoconf \
-            automake \
-            libtool \
-            pkg-config
+          sudo apt-get install -y mingw-w64 cmake
 
       - name: Build libusb for Windows
         shell: bash
         run: |
           git clone --depth 1 https://github.com/libusb/libusb.git "$RUNNER_TEMP/libusb"
-          cd "$RUNNER_TEMP/libusb"
-          ./autogen.sh
-          ./configure \
-            --build="$(gcc -dumpmachine)" \
-            --host=x86_64-w64-mingw32 \
-            CC=x86_64-w64-mingw32-gcc \
-            AR=x86_64-w64-mingw32-ar \
-            RANLIB=x86_64-w64-mingw32-ranlib \
-            --prefix="$RUNNER_TEMP/mingw-libusb" \
-            --disable-udev \
-            --disable-shared \
-            --enable-static
-          make -j"$(nproc)"
-          make install
+          cmake -S "$RUNNER_TEMP/libusb" \
+            -B "$RUNNER_TEMP/libusb-build" \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/mingw-libusb" \
+            -DLIBUSB_BUILD_SHARED_LIBS=OFF \
+            -DLIBUSB_BUILD_TESTING=OFF
+          cmake --build "$RUNNER_TEMP/libusb-build" --config Release --parallel
+          cmake --install "$RUNNER_TEMP/libusb-build" --config Release
 
       - name: Build spd_dump.exe
         shell: bash
