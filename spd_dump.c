@@ -254,6 +254,48 @@ static void spdio_free(spdio_t* io) {
 	free(io);
 }
 
+#if USE_LIBUSB
+static void recover_usb_reenumeration(spdio_t *io) {
+	libusb_device_handle *new_handle = NULL;
+	libusb_device *device;
+	int endpoints[5];
+	int i;
+
+	DBG_LOG("USB device disappeared; waiting for VID:PID 1782:4d00 to re-enumerate\n");
+	libusb_close(io->dev_handle);
+	io->dev_handle = NULL;
+
+	for (i = 0; i < 300; i++) {
+		new_handle = libusb_open_device_with_vid_pid(NULL, 0x1782, 0x4d00);
+		if (new_handle) break;
+		usleep(100000);
+	}
+	if (!new_handle)
+		ERR_EXIT("USB device did not re-enumerate within 30 seconds\n");
+
+	device = libusb_get_device(new_handle);
+	DBG_LOG("USB device re-enumerated: handle=%p bus=%u address=%u\n",
+			(void*)new_handle,
+			device ? libusb_get_bus_number(device) : 0,
+			device ? libusb_get_device_address(device) : 0);
+
+	/* Re-read configuration 0, discover endpoints, detach/claim interface. */
+	find_endpoints(new_handle, endpoints);
+	io->dev_handle = new_handle;
+	io->endp_in = endpoints[0];
+	io->endp_out = endpoints[1];
+	io->endp_in_blk = endpoints[2];
+	io->endp_out_blk = endpoints[3];
+	io->interface_num = endpoints[4];
+	DBG_LOG("USB re-enumeration recovery complete: handle=%p iface=%d IN=0x%02x OUT=0x%02x IN_MPS=%d OUT_MPS=%d\n",
+			(void*)io->dev_handle, io->interface_num,
+			io->endp_in, io->endp_out,
+			io->endp_in_blk, io->endp_out_blk);
+
+	ERR_EXIT("USB device re-enumerated; protocol state not resumed\n");
+}
+#endif
+
 static int spd_transcode(uint8_t *dst, uint8_t *src, int len) {
 	int i, a, n = 0;
 	for (i = 0; i < len; i++) {
@@ -454,7 +496,9 @@ static int recv_msg1(spdio_t *io) {
 	for (;;) {
 		if (pos >= len) {
 #if USE_LIBUSB
-							int err = libusb_bulk_transfer(io->dev_handle, io->endp_in, io->recv_buf, RECV_BUF_LEN, &len, io->timeout);
+				int err = libusb_bulk_transfer(io->dev_handle,
+						io->endp_in, io->recv_buf, RECV_BUF_LEN,
+						&len, io->timeout);
 				DBG_LOG("USB IN ep=0x%02x requested=%d transferred=%d ret=%d (%s)\n",
 						io->endp_in, RECV_BUF_LEN, len, err,
 						err < 0 ? libusb_error_name(err) : "OK");
@@ -464,6 +508,8 @@ static int recv_msg1(spdio_t *io) {
 					DBG_LOG("USB clear_halt ep=0x%02x ret=%d (%s)\n",
 							io->endp_in, clr,
 							clr < 0 ? libusb_error_name(clr) : "OK");
+					if (clr == LIBUSB_ERROR_NO_DEVICE)
+						recover_usb_reenumeration(io);
 					if (clr == 0) {
 						len = 0;
 						err = libusb_bulk_transfer(io->dev_handle,
@@ -471,7 +517,7 @@ static int recv_msg1(spdio_t *io) {
 								&len, io->timeout);
 						DBG_LOG("USB IN retry ep=0x%02x requested=%d transferred=%d ret=%d (%s)\n",
 								io->endp_in, RECV_BUF_LEN, len, err,
-								 err < 0 ? libusb_error_name(err) : "OK");
+								err < 0 ? libusb_error_name(err) : "OK");
 					}
 				}
 				if (err == LIBUSB_ERROR_NO_DEVICE)
