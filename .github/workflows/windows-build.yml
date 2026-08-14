@@ -23,35 +23,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install cross-compiler and Autoconf dependencies
+      - name: Install cross-compiler and CMake
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 autoconf automake libtool pkg-config
+          sudo apt-get install -y mingw-w64 cmake ninja-build
 
       - name: Build libusb for Windows
         shell: bash
         run: |
           git clone --depth 1 https://github.com/libusb/libusb.git "$RUNNER_TEMP/libusb"
-          cd "$RUNNER_TEMP/libusb"
-          ./autogen.sh
-          export CC=x86_64-w64-mingw32-gcc
-          export CXX=x86_64-w64-mingw32-g++
-          export AR=x86_64-w64-mingw32-ar
-          export RANLIB=x86_64-w64-mingw32-ranlib
-          export NM=x86_64-w64-mingw32-nm
-          export STRIP=x86_64-w64-mingw32-strip
-          export WINDRES=x86_64-w64-mingw32-windres
-          command -v "$CC"
-          "$CC" --version
-          ./configure \
-            --build=x86_64-pc-linux-gnu \
-            --host=x86_64-w64-mingw32 \
-            --prefix="$RUNNER_TEMP/mingw-libusb" \
-            --disable-udev \
-            --disable-shared \
-            --enable-static
-          make -j"$(nproc)"
-          make install
+          cmake -S "$RUNNER_TEMP/libusb" -B "$RUNNER_TEMP/libusb-build" -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/mingw-libusb" \
+            -DLIBUSB_BUILD_SHARED_LIBS=OFF \
+            -DLIBUSB_BUILD_TESTING=OFF \
+            -DLIBUSB_BUILD_EXAMPLES=OFF
+          cmake --build "$RUNNER_TEMP/libusb-build" --parallel
+          cmake --install "$RUNNER_TEMP/libusb-build"
 
       - name: Build spd_dump.exe
         shell: bash
