@@ -34,17 +34,22 @@ jobs:
           git clone --depth 1 https://github.com/libusb/libusb.git "$RUNNER_TEMP/libusb"
           cd "$RUNNER_TEMP/libusb"
           ./autogen.sh
-          env \
-            CC=x86_64-w64-mingw32-gcc \
-            AR=x86_64-w64-mingw32-ar \
-            RANLIB=x86_64-w64-mingw32-ranlib \
-            ./configure \
-              --build="$(gcc -dumpmachine)" \
-              --host=x86_64-w64-mingw32 \
-              --prefix="$RUNNER_TEMP/mingw-libusb" \
-              --disable-udev \
-              --disable-shared \
-              --enable-static
+          export CC=x86_64-w64-mingw32-gcc
+          export CXX=x86_64-w64-mingw32-g++
+          export AR=x86_64-w64-mingw32-ar
+          export RANLIB=x86_64-w64-mingw32-ranlib
+          export NM=x86_64-w64-mingw32-nm
+          export STRIP=x86_64-w64-mingw32-strip
+          export WINDRES=x86_64-w64-mingw32-windres
+          command -v "$CC"
+          "$CC" --version
+          ./configure \
+            --build=x86_64-pc-linux-gnu \
+            --host=x86_64-w64-mingw32 \
+            --prefix="$RUNNER_TEMP/mingw-libusb" \
+            --disable-udev \
+            --disable-shared \
+            --enable-static
           make -j"$(nproc)"
           make install
 
