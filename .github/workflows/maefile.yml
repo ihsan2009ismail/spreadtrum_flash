@@ -1,28 +1,28 @@
-name: Build spd_dump
+name: Build spd_dump Windows
 
 on:
+  workflow_dispatch:
   push:
-    branches: ["main"]
-  pull_request:
     branches: ["main"]
 
 jobs:
-  build:
+  build-windows:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install MinGW and libusb
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc make libusb-1.0-0-dev
+          sudo apt-get install -y mingw-w64
 
-      - name: Build
-        run: make
+      - name: Build Windows executable
+        run: |
+          x86_64-w64-mingw32-gcc -DUSE_LIBUSB=1 -O2 -o spd_dump.exe spd_dump.c -lusb-1.0
 
-      - name: Upload spd_dump
+      - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: spd_dump
-          path: spd_dump
+          name: spd_dump-windows
+          path: spd_dump.exe
